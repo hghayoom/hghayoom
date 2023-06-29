@@ -1,0 +1,127 @@
+using SDDP, HiGHS, Test, GLPK,Distributions,Random,Statistics
+
+
+function finite_lin_DH()
+
+    graph2 = SDDP.Graph(
+        :root_node,
+        # we have 4 time steps and for each one we need a decicion node and a resource node
+        [:decision1, :recourse1,:decision2, :recourse2,:decision3, :recourse3,:decision4, :recourse4],
+        [
+            (:root_node => :decision1, 1.0),
+            (:decision1 => :recourse1, 1.0),
+            (:recourse1 => :decision2, 1.0),
+            (:decision2 => :recourse2, 1.0),
+            (:recourse2 => :decision3, 1.0),
+            (:decision3 => :recourse3, 1.0),
+            (:recourse3 => :decision4, 1.0),
+            (:decision4 => :recourse4, 1.0),
+            # (:recourse4 => :decision1, 0.95),
+        ],
+    )
+dd=1
+model = SDDP.PolicyGraph(
+    graph2,
+        # bellman_function = SDDP.BellmanFunction(lower_bound = 0),
+        # optimizer = GLPK.Optimizer,
+        sense = :Min,
+        lower_bound = 0.0,
+        optimizer = HiGHS.Optimizer,
+    ) do sp, node
+        @variable(sp, 0 <= x <= 8, SDDP.State, initial_value = 7)# reservoir water level in each step
+        @variable(sp, 0 <= p , SDDP.State, initial_value = 2) # producing power with cost
+
+        @variables(sp, begin
+            y >= 0 # using reservoir water
+           # p >= 0 #Power Generation
+            s>=0   # spill water
+            ξ  # input
+            Borow>=0#Borrow water if water level is negative
+        end)
+
+        if  node in [:decision1 , :decision2 ,:decision3 ,:decision4 ]    
+            @constraint(sp, x.out == x.in)
+            @stageobjective(sp, 20 * p.out)
+
+        else 
+            @constraints(sp, begin
+            p.in + y == 9
+            x.out == x.in - y + ξ - s+ Borow
+            end)
+            Pg=rand([2, 3],4)
+            # Pg = rand(Distributions.TruncatedNormal(5, 2, 0, 10), 4)
+            # sort!(Pg)
+            SDDP.parameterize(sp, Pg) do ω
+                JuMP.fix(ξ, ω)
+            end
+            @stageobjective(sp, 200 * s+500*Borow)
+
+        end
+    end
+    return model
+end
+
+
+
+function finite_lin_HD()
+
+model = SDDP.PolicyGraph(
+    # this time we define a line graph
+        SDDP.LinearGraph(4),
+        sense = :Min,
+        lower_bound = 0.0,
+        optimizer = HiGHS.Optimizer,
+    ) do sp, node
+        @variable(sp, 0 <= x <= 8, SDDP.State, initial_value = 7)# reservoir water level in each step
+       # @variable(sp, 0 <= p , SDDP.State, initial_value = 2) # producing power with cost
+
+        @variables(sp, begin
+            y >= 0 # using reservoir water
+            p >= 0 #Power Generation
+            s>=0   # spill water
+            ξ  # input
+            Borow>=0#Borrow water if water level is negative
+        end)
+
+            @constraints(sp, begin
+            p + y == 9
+            x.out == x.in - y + ξ - s+ Borow
+            end)
+            Pg=rand([2, 3],4)
+            # Pg = rand(Distributions.TruncatedNormal(5, 2, 0, 10), 4)
+            # sort!(Pg)
+            SDDP.parameterize(sp, Pg) do ω
+                JuMP.fix(ξ, ω)
+            end
+            @stageobjective(sp, 200 * s+500*Borow+20 * p)
+
+   
+    end
+    return model
+end
+
+
+a=1
+        
+Random.seed!(1234)
+begin
+    model = infinite_lin_DH()
+    SDDP.train(model, iteration_limit = 30, print_level = 1)
+    results = SDDP.simulate(model, 100, [:y,:p,:ξ,:x,:s,:Borow],)
+    objectives = [sum(s[:stage_objective] for s in simulation) for simulation in results]
+    sample_mean = round(Statistics.mean(objectives); digits = 2)
+    sample_ci = round(1.96 * Statistics.std(objectives) / sqrt(500); digits = 2)
+    println("DH Confidence_interval = $(sample_mean) ± $(sample_ci)")
+end
+
+Random.seed!(1234)
+begin
+    model = infinite_lin_HD()
+    SDDP.train(model, iteration_limit = 30, print_level = 1)
+    results = SDDP.simulate(model, 100, [:y,:p,:ξ,:x,:s,:Borow],)
+    objectives = [sum(s[:stage_objective] for s in simulation) for simulation in results]
+    sample_mean = round(Statistics.mean(objectives); digits = 2)
+    sample_ci = round(1.96 * Statistics.std(objectives) / sqrt(500); digits = 2)
+    println("HD Confidence_interval = $(sample_mean) ± $(sample_ci)")
+end
+
